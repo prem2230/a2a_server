@@ -50,7 +50,7 @@ demoRouter.post("/run", async (req: Request, res: Response) => {
 
   const parsed = bodySchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid demo setup" });
-  if (!process.env.MODEL_API_KEY) return res.status(503).json({ error: "Add MODEL_API_KEY to a2a_server/.env to run the agent demo." });
+  if (!process.env.MODEL_API_KEY) return res.status(503).json({ error: "Configure the AI service key in a2a_server/.env to run the agent demo." });
 
   res.status(200);
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
@@ -62,7 +62,7 @@ demoRouter.post("/run", async (req: Request, res: Response) => {
     if (type === "stage") console.info(`[${new Date().toISOString()}] [A2A DEMO] ${event.key ?? "stage"}: ${event.label ?? "Workflow stage"}`);
     else if (type === "message") console.info(`[${new Date().toISOString()}] [A2A DEMO] agent replied: ${event.speaker ?? "agent"}`);
     else if (type === "done") console.info(`[${new Date().toISOString()}] [A2A DEMO] workflow finished: ${event.status ?? "unknown"}`);
-    else if (type === "error") console.error(`[${new Date().toISOString()}] [A2A DEMO] workflow error: ${(data as { error?: string }).error ?? "unknown error"}`);
+    else if (type === "error") console.error(`[${new Date().toISOString()}] [A2A DEMO] workflow paused after an error`);
     send(res, type, data);
   };
   let activeEscrow: Awaited<ReturnType<typeof Escrow.create>> | null = null;
@@ -233,7 +233,7 @@ demoRouter.post("/run", async (req: Request, res: Response) => {
     emit("done", { status: "released", negotiationId: String(negotiation._id), escrowId: String(escrow._id), hashCommitment: hash });
     return res.end();
   } catch (error) {
-    console.error("Autonomous demo failed", error);
+    console.error(`[${new Date().toISOString()}] [A2A DEMO] autonomous workflow failed`);
     if (activeEscrow && (activeEscrow.status === "locked" || activeEscrow.status === "shipped" || activeEscrow.status === "delivered")) {
       activeEscrow.status = "disputed";
       await activeEscrow.save();
