@@ -1,0 +1,38 @@
+# Dependencies
+/node_modules/
+
+# Compiled output and coverage
+/dist/
+/build/
+/coverage/
+/.nyc_output/
+
+# Local environment files (keep the safe template in Git)
+.env
+.env.*
+!.env.example
+
+# Logs and package-manager debug files
+/logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# TypeScript and tool caches
+*.tsbuildinfo
+/.turbo/
+/.cache/
+/.eslintcache
+
+# Temporary runtime files
+/tmp/
+/temp/
+
+# Local editor and operating-system files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.history/
