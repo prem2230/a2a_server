@@ -1,14 +1,16 @@
 import "dotenv/config";
-import express from "express";
+import express, { type RequestHandler } from "express";
 import cors from "cors";
-import * as helmetModule from "helmet";
 import mongoose from "mongoose";
+import { createRequire } from "node:module";
 import { router, expireEscrows } from "./routes.js";
 
+const require = createRequire(import.meta.url);
+const helmet = require("helmet") as () => RequestHandler;
 const app = express();
 const port = Number(process.env.PORT ?? 4000);
 
-app.use(helmetModule.default());
+app.use(helmet());
 app.use(cors({ origin: process.env.CLIENT_ORIGIN ?? "http://localhost:3000" }));
 app.use(express.json({ limit: "1mb" }));
 app.get("/api/health", (_req, res) => res.json({ ok: true, service: "a2a-commerce-api" }));
