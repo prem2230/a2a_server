@@ -5,6 +5,7 @@ import { z } from "zod";
 import { AuditEvent, Escrow, Listing, Negotiation, User, type Terms } from "./models.js";
 import { runAgentTurn } from "./services/negotiation.js";
 import { withGeminiResilience } from "./services/gemini.js";
+import { activateDemoFallback, currentAiMode, isDemoMode } from "./services/ai-mode.js";
 
 export const demoRouter = Router();
 const starts = new Map<string, number[]>();
@@ -30,15 +31,51 @@ function encryptSecret(secret: string) {
   const ciphertext = Buffer.concat([cipher.update(secret, "utf8"), cipher.final()]);
   return { secretCiphertext: ciphertext.toString("base64"), secretIv: iv.toString("base64"), secretTag: cipher.getAuthTag().toString("base64") };
 }
-async function askStructured<T>(agent: string, system: string, prompt: string, schema: Record<string, unknown>): Promise<T> {
-  const response = await withGeminiResilience(agent, (client, model) => client.models.generateContent({
-    model,
-    contents: prompt,
-    config: { systemInstruction: system, responseMimeType: "application/json", responseJsonSchema: schema },
-  }));
-  const raw = response.text?.trim();
-  if (!raw) throw new Error("A workflow agent returned no response.");
-  return JSON.parse(raw) as T;
+function simulateStructuredAgent<T>(agent: string, prompt: string): T {
+  const input = JSON.parse(prompt) as Record<string, unknown>;
+  let result: Record<string, unknown>;
+  if (agent === "marketplace-discovery-agent") {
+    const offers = Array.isArray(input.offers) ? input.offers as Array<{ sellerIndex: number; askingPrice: number }> : [];
+    const eligible = offers.filter(offer => offer.askingPrice <= Number(input.buyerMaximum)).sort((a, b) => a.askingPrice - b.askingPrice);
+    result = eligible.length
+      ? { sellerIndex: eligible[0]!.sellerIndex, reason: `Selected the lowest priced matching offer at ${eligible[0]!.askingPrice} within the buyer's budget.` }
+      : { sellerIndex: -1, reason: "No matching offer fits within the buyer's budget." };
+  } else if (agent === "financial-institution-agent") {
+    const expiry = new Date(String(input.expiresAt));
+    const terms = input.terms as { amount?: number; currency?: string } | undefined;
+    const valid = Number(input.amount) > 0 && !!input.currency && terms?.currency === input.currency && terms?.amount === input.amount && Number.isFinite(expiry.getTime()) && expiry > new Date();
+    result = { approved: valid, reason: valid ? "The transaction amount, currency, terms, and future expiry are consistent." : "The transaction record failed an amount, currency, terms, or expiry check." };
+  } else if (agent === "seller-fulfillment-agent") {
+    const item = String(input.item ?? "demo item");
+    const method = String(input.deliveryMethod ?? "simulated delivery");
+    result = { reference: `DEMO-${randomBytes(4).toString("hex").toUpperCase()}`, description: `Simulated fulfillment for ${item} via ${method}. No real shipment occurred.` };
+  } else if (agent === "fulfillment-verifier-agent") {
+    const shipment = input.shipment as { description?: string } | undefined;
+    const description = shipment?.description ?? "";
+    const valid = description.includes(String(input.agreedItem ?? "")) && description.includes(String(input.deliveryMethod ?? "")) && description.includes("Simulated fulfillment");
+    result = { verified: valid, reason: valid ? "The simulated fulfillment record matches the agreed item and delivery method." : "The simulated fulfillment record does not match the agreed terms." };
+  } else {
+    throw new Error(`No local demo behavior is defined for ${agent}.`);
+  }
+  return result as T;
+}
+
+async function askStructured<T>(agent: string, system: string, prompt: string, schema: Record<string, unknown>, onFallback?: () => void): Promise<T> {
+  if (isDemoMode()) return simulateStructuredAgent<T>(agent, prompt);
+  try {
+    const response = await withGeminiResilience(agent, (client, model) => client.models.generateContent({
+      model,
+      contents: prompt,
+      config: { systemInstruction: system, responseMimeType: "application/json", responseJsonSchema: schema },
+    }));
+    const raw = response.text?.trim();
+    if (!raw) throw new Error("A workflow agent returned no response.");
+    return JSON.parse(raw) as T;
+  } catch {
+    activateDemoFallback("a structured agent request failed");
+    onFallback?.();
+    return simulateStructuredAgent<T>(agent, prompt);
+  }
 }
 
 demoRouter.post("/run", async (req: Request, res: Response) => {
@@ -50,7 +87,8 @@ demoRouter.post("/run", async (req: Request, res: Response) => {
 
   const parsed = bodySchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid demo setup" });
-  if (!process.env.MODEL_API_KEY) return res.status(503).json({ error: "Configure the AI service key in a2a_server/.env to run the agent demo." });
+  let demoModeReported = isDemoMode();
+  console.info(`[${new Date().toISOString()}] [A2A DEMO] starting ${currentAiMode() === "live" ? "live AI" : "token-free demo"} workflow`);
 
   res.status(200);
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
@@ -65,6 +103,14 @@ demoRouter.post("/run", async (req: Request, res: Response) => {
     else if (type === "error") console.error(`[${new Date().toISOString()}] [A2A DEMO] workflow paused after an error`);
     send(res, type, data);
   };
+  const reportDemoFallback = () => {
+    if (!demoModeReported && isDemoMode()) {
+      demoModeReported = true;
+      emit("mode", { mode: "demo", detail: "Live AI became unavailable; the workflow continued in token-free demo mode." });
+    }
+  };
+  if (demoModeReported) emit("mode", { mode: "demo", detail: "Server environment selected token-free demo mode." });
+  else emit("mode", { mode: "live", detail: "Server environment selected live AI mode." });
   let activeEscrow: Awaited<ReturnType<typeof Escrow.create>> | null = null;
 
   try {
@@ -87,7 +133,7 @@ demoRouter.post("/run", async (req: Request, res: Response) => {
     const match = await askStructured<{ sellerIndex: number; reason: string }>("marketplace-discovery-agent",
       "You are the buyer's marketplace discovery agent. Select the lowest priced matching offer that does not exceed the buyer's maximum budget. Return the zero-based sellerIndex from the supplied candidate list and a concise reason. If none fit, use -1.",
       JSON.stringify({ item: data.item, buyerMaximum: data.buyerBudget, offers: sellerCandidates.map((candidate, index) => ({ sellerIndex: index, title: candidate.listing.title, askingPrice: candidate.listing.askingPrice, currency: candidate.listing.currency })) }),
-      { type: "object", properties: { sellerIndex: { type: "integer" }, reason: { type: "string" } }, required: ["sellerIndex", "reason"] },
+      { type: "object", properties: { sellerIndex: { type: "integer" }, reason: { type: "string" } }, required: ["sellerIndex", "reason"] }, reportDemoFallback,
     );
     const affordable = sellerCandidates
       .map((candidate, index) => ({ candidate, index }))
@@ -128,6 +174,7 @@ demoRouter.post("/run", async (req: Request, res: Response) => {
           : `The seller's confidential minimum is ${data.currency} ${selectedSellerReserve}. Never agree below it.`;
         emit("agent_turn", { speaker: side === "buyer" ? "buyer_agent" : "seller_agent", label: `${side === "buyer" ? "Buyer" : "Seller"} agent is preparing a reply` });
         const result = await runAgentTurn({ side, userMessage: direction, principalDirection, principalContext, listing: listingContext, messages: negotiation.messages.map(message => ({ speaker: message.speaker, text: message.text })), ...(terms ? { terms } : {}) });
+        reportDemoFallback();
         const speaker = side === "buyer" ? "buyer_agent" : "seller_agent";
         const validProposal = result.terms && result.terms.amount <= data.buyerBudget && result.terms.amount >= selectedSellerReserve ? result.terms : undefined;
         negotiation.messages.push({ speaker, text: result.text, ...(validProposal ? { proposedTerms: validProposal } : {}) });
@@ -181,7 +228,7 @@ demoRouter.post("/run", async (req: Request, res: Response) => {
     const bankReview = await askStructured<{ approved: boolean; reason: string }>("financial-institution-agent",
       "You are a simulated financial institution review agent. Review only the supplied transaction record for complete terms, positive amount, matching currency, and a future deadline. Do not claim real money moved. Approve only if every check passes.",
       JSON.stringify({ amount: escrow.amount, currency: escrow.currency, terms, expiresAt, hashCommitment: hash }),
-      { type: "object", properties: { approved: { type: "boolean" }, reason: { type: "string" } }, required: ["approved", "reason"] },
+      { type: "object", properties: { approved: { type: "boolean" }, reason: { type: "string" } }, required: ["approved", "reason"] }, reportDemoFallback,
     );
     const institutionApproved = bankReview.approved === true;
     emit("stage", { key: institutionApproved ? "institution_approved" : "institution_rejected", label: institutionApproved ? "Financial institution agent approved the lock" : "Financial institution agent rejected the lock", detail: bankReview.reason });
@@ -197,7 +244,7 @@ demoRouter.post("/run", async (req: Request, res: Response) => {
     const shipment = await askStructured<{ reference: string; description: string }>("seller-fulfillment-agent",
       "You are a simulated seller fulfillment agent. Generate a clearly fictional shipment reference and a concise fulfillment description for the agreed goods. Do not claim a real carrier or real delivery.",
       JSON.stringify({ item: terms.item, deliveryMethod: terms.deliveryMethod, amount: terms.amount }),
-      { type: "object", properties: { reference: { type: "string" }, description: { type: "string" } }, required: ["reference", "description"] },
+      { type: "object", properties: { reference: { type: "string" }, description: { type: "string" } }, required: ["reference", "description"] }, reportDemoFallback,
     );
     escrow.status = "shipped";
     escrow.shipmentReference = shipment.reference.slice(0, 250);
@@ -209,7 +256,7 @@ demoRouter.post("/run", async (req: Request, res: Response) => {
     const verification = await askStructured<{ verified: boolean; reason: string }>("fulfillment-verifier-agent",
       "You are an independent simulated fulfillment verifier. Compare the agreed item and delivery method with the submitted shipment description. Verify only that the evidence is internally consistent; it is not real-world proof. Be conservative.",
       JSON.stringify({ agreedItem: terms.item, deliveryMethod: terms.deliveryMethod, shipment }),
-      { type: "object", properties: { verified: { type: "boolean" }, reason: { type: "string" } }, required: ["verified", "reason"] },
+      { type: "object", properties: { verified: { type: "boolean" }, reason: { type: "string" } }, required: ["verified", "reason"] }, reportDemoFallback,
     );
     const fulfillmentVerified = verification.verified === true;
     emit("stage", { key: fulfillmentVerified ? "fulfillment_verified" : "fulfillment_rejected", label: fulfillmentVerified ? "Fulfillment verification agent approved the evidence" : "Fulfillment verification agent flagged the evidence", detail: verification.reason });

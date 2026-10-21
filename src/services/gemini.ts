@@ -1,4 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
+import { isDemoMode } from "./ai-mode.js";
 
 type GeminiClient = GoogleGenAI;
 type ModelCall<T> = (client: GeminiClient, model: string) => Promise<T>;
@@ -48,6 +49,7 @@ async function retryModel<T>(client: GeminiClient, model: string, call: ModelCal
 }
 
 export async function withGeminiResilience<T>(agent: string, call: ModelCall<T>): Promise<T> {
+  if (isDemoMode()) throw new Error("Live AI calls are disabled by the server environment setting.");
   const apiKey = process.env.MODEL_API_KEY;
   if (!apiKey) throw new Error("Agent workflow is unavailable: the AI service key is not configured.");
   const client = new GoogleGenAI({ apiKey });
