@@ -14,7 +14,9 @@ function retryable(error: unknown): boolean {
   const status = Number(value?.status ?? value?.code);
   if ([429, 500, 502, 503, 504].includes(status)) return true;
   const message = typeof value?.message === "string" ? value.message : String(error);
-  return /\b(429|500|502|503|504)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|ECONNRESET|ETIMEDOUT|fetch failed/i.test(message);
+  return /\b(429|500|502|503|504)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|ECONNRESET|ETIMEDOUT|fetch failed/i.test(
+    message,
+  );
 }
 
 function attempts(): number {
@@ -22,26 +24,49 @@ function attempts(): number {
   return Number.isInteger(configured) ? Math.min(5, Math.max(1, configured)) : 3;
 }
 
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function retryModel<T>(client: GeminiClient, model: string, call: ModelCall<T>, count: number, agent: string): Promise<T> {
+async function retryModel<T>(
+  client: GeminiClient,
+  model: string,
+  call: ModelCall<T>,
+  count: number,
+  agent: string,
+): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt < count; attempt += 1) {
     const startedAt = Date.now();
     log("info", "agent request started", { agent, attempt: attempt + 1, maxAttempts: count });
     try {
       const result = await call(client, model);
-      log("info", "agent request completed", { agent, attempt: attempt + 1, durationMs: Date.now() - startedAt });
+      log("info", "agent request completed", {
+        agent,
+        attempt: attempt + 1,
+        durationMs: Date.now() - startedAt,
+      });
       return result;
     } catch (error) {
       lastError = error;
       const retry = retryable(error) && attempt < count - 1;
       if (!retry) {
-        log("error", "agent request failed", { agent, attempt: attempt + 1, durationMs: Date.now() - startedAt, retryable: retryable(error) });
-        throw new Error("AI service request failed. Check the AI service configuration and server logs.", { cause: error });
+        log("error", "agent request failed", {
+          agent,
+          attempt: attempt + 1,
+          durationMs: Date.now() - startedAt,
+          retryable: retryable(error),
+        });
+        throw new Error(
+          "AI service request failed. Check the AI service configuration and server logs.",
+          { cause: error },
+        );
       }
       const backoff = Math.min(4000, 600 * 2 ** attempt) + Math.floor(Math.random() * 300);
-      log("warn", "temporary AI service issue; retrying", { agent, attempt: attempt + 1, durationMs: Date.now() - startedAt, retryInMs: backoff });
+      log("warn", "temporary AI service issue; retrying", {
+        agent,
+        attempt: attempt + 1,
+        durationMs: Date.now() - startedAt,
+        retryInMs: backoff,
+      });
       await delay(backoff);
     }
   }
@@ -49,9 +74,11 @@ async function retryModel<T>(client: GeminiClient, model: string, call: ModelCal
 }
 
 export async function withGeminiResilience<T>(agent: string, call: ModelCall<T>): Promise<T> {
-  if (isDemoMode()) throw new Error("Live AI calls are disabled by the server environment setting.");
+  if (isDemoMode())
+    throw new Error("Live AI calls are disabled by the server environment setting.");
   const apiKey = process.env.MODEL_API_KEY;
-  if (!apiKey) throw new Error("Agent workflow is unavailable: the AI service key is not configured.");
+  if (!apiKey)
+    throw new Error("Agent workflow is unavailable: the AI service key is not configured.");
   const client = new GoogleGenAI({ apiKey });
   const primary = process.env.MODEL_NAME ?? "gemini-3.1-flash-lite";
   const fallback = process.env.MODEL_FALLBACK_NAME ?? "gemini-3.8-flash";
@@ -65,10 +92,15 @@ export async function withGeminiResilience<T>(agent: string, call: ModelCall<T>)
     } catch (fallbackError) {
       if (!retryable(fallbackError)) {
         log("error", "backup AI service request failed", { agent, retryable: false });
-        throw new Error("AI service request failed. Check the AI service configuration and server logs.", { cause: fallbackError });
+        throw new Error(
+          "AI service request failed. Check the AI service configuration and server logs.",
+          { cause: fallbackError },
+        );
       }
       log("error", "AI service temporarily unavailable after retries", { agent, retryable: true });
-      throw new Error("The AI service is temporarily unavailable. Wait a minute and try again.", { cause: fallbackError });
+      throw new Error("The AI service is temporarily unavailable. Wait a minute and try again.", {
+        cause: fallbackError,
+      });
     }
   }
 }

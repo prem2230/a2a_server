@@ -5,7 +5,9 @@ let fallbackToDemo = false;
 export function activateDemoFallback(reason: string): void {
   if (fallbackToDemo) return;
   fallbackToDemo = true;
-  console.warn(`[${new Date().toISOString()}] [AI SERVICE] Live AI unavailable (${reason}); switching this server process to token-free demo mode.`);
+  console.warn(
+    `[${new Date().toISOString()}] [AI SERVICE] Live AI unavailable (${reason}); switching this server process to token-free demo mode.`,
+  );
 }
 
 export function isDemoMode(): boolean {
