@@ -1,4 +1,13 @@
-import mongoose, { Schema, type InferSchemaType } from "mongoose";
+import mongoose, {
+  Schema,
+  type HydratedDocument,
+  type InferSchemaType,
+  type Model,
+} from "mongoose";
+
+function getModel<T>(name: string, schema: Schema<T>): Model<T> {
+  return (mongoose.models[name] as Model<T> | undefined) ?? mongoose.model<T>(name, schema);
+}
 
 const userSchema = new Schema(
   {
@@ -97,9 +106,10 @@ const auditSchema = new Schema({
 });
 
 export type Terms = InferSchemaType<typeof termsSchema>;
-export const User = mongoose.models.User ?? mongoose.model("User", userSchema);
-export const Listing = mongoose.models.Listing ?? mongoose.model("Listing", listingSchema);
-export const Negotiation =
-  mongoose.models.Negotiation ?? mongoose.model("Negotiation", negotiationSchema);
-export const Escrow = mongoose.models.Escrow ?? mongoose.model("Escrow", escrowSchema);
-export const AuditEvent = mongoose.models.AuditEvent ?? mongoose.model("AuditEvent", auditSchema);
+export type ListingDocument = HydratedDocument<InferSchemaType<typeof listingSchema>>;
+export type EscrowDocument = HydratedDocument<InferSchemaType<typeof escrowSchema>>;
+export const User = getModel("User", userSchema);
+export const Listing = getModel("Listing", listingSchema);
+export const Negotiation = getModel("Negotiation", negotiationSchema);
+export const Escrow = getModel("Escrow", escrowSchema);
+export const AuditEvent = getModel("AuditEvent", auditSchema);

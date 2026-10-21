@@ -175,7 +175,7 @@ router.post("/negotiations/:id/turn", requireAuth, async (req, res) => {
     currency: listing.currency,
   };
   const history = () =>
-    n.messages.map((m) => ({
+    n.messages.map((m: { speaker: string; text: string; proposedTerms?: unknown }) => ({
       speaker: m.speaker,
       text: m.text,
       proposedTerms: m.proposedTerms ? safe(m.proposedTerms) : undefined,

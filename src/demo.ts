@@ -2,7 +2,16 @@ import { Router, type Request, type Response } from "express";
 import bcrypt from "bcryptjs";
 import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
-import { AuditEvent, Escrow, Listing, Negotiation, User, type Terms } from "./models.js";
+import {
+  AuditEvent,
+  Escrow,
+  Listing,
+  Negotiation,
+  User,
+  type EscrowDocument,
+  type ListingDocument,
+  type Terms,
+} from "./models.js";
 import { runAgentTurn } from "./services/negotiation.js";
 import { withGeminiResilience } from "./services/gemini.js";
 import { activateDemoFallback, currentAiMode, isDemoMode } from "./services/ai-mode.js";
@@ -179,7 +188,7 @@ demoRouter.post("/run", async (req: Request, res: Response) => {
   if (demoModeReported)
     emit("mode", { mode: "demo", detail: "Server environment selected token-free demo mode." });
   else emit("mode", { mode: "live", detail: "Server environment selected live AI mode." });
-  let activeEscrow: Awaited<ReturnType<typeof Escrow.create>> | null = null;
+  let activeEscrow: EscrowDocument | null = null;
 
   try {
     const data = parsed.data;
@@ -192,7 +201,7 @@ demoRouter.post("/run", async (req: Request, res: Response) => {
     });
     const sellerCandidates: Array<{
       seller: typeof buyer;
-      listing: Awaited<ReturnType<typeof Listing.create>>;
+      listing: ListingDocument;
       reserve: number;
     }> = [];
     const priceFactors = [1, 0.94, 1.08];
@@ -321,7 +330,7 @@ demoRouter.post("/run", async (req: Request, res: Response) => {
           principalDirection,
           principalContext,
           listing: listingContext,
-          messages: negotiation.messages.map((message) => ({
+          messages: negotiation.messages.map((message: { speaker: string; text: string }) => ({
             speaker: message.speaker,
             text: message.text,
           })),
